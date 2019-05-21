@@ -1,0 +1,419 @@
+!!--------------------------------------------------------!!
+!  Reference solution from 
+!  MISMIP SETUP
+!  Experiment MISMIP 1a - step 4
+!  starting from the Schoof solution
+!!--------------------------------------------------------!!
+
+check keywords warn
+echo off
+$namerun = "perturbation"
+
+! 
+! working units are MPa, a, m
+! 
+$yearinsec = 365.25*24*60*60
+$rhoi = 900.0/(1.0e6*yearinsec^2)
+$rhow = 1000.0/(1.0e6*yearinsec^2)
+!$A = 4.6416e-25*yearinsec*1.0e18
+$A = 1.38e-24*yearinsec*1.0e18
+$n = 3.0
+$eta = 1.0/(2.0*A)^(1.0/n)
+$gravity = -9.8*yearinsec^2
+$C = 7.624e6/(1.0e6*yearinsec^(1.0/n))
+
+Header
+  Mesh DB "." "mesh2d"
+End
+
+Constants
+  Water Density = Real $rhow
+End
+
+!---------------------------------------------------
+!---------------- SIMULATION -----------------------
+!---------------------------------------------------
+
+Simulation
+  Coordinate System  = Cartesian 2D 
+  Simulation Type = transient
+!  Simulation Type = steady state
+
+  Timestepping Method = "bdf"
+  BDF Order = 1
+  Timestep Intervals = 3
+  Output Intervals = 1
+  Timestep Sizes = 1.0
+
+  Initialize Dirichlet Conditions = Logical False
+  Steady State Max Iterations = 100
+  Steady State Min Iterations = 1
+
+  Post File = "$namerun".vtu"
+  max output level = 3
+End
+
+!---------------------------------------------------
+!---------------- BODIES ---------------------------
+!---------------------------------------------------
+
+! the ice 
+Body 1
+  Name = "ice"
+  Equation = 1
+  Body Force = 1
+  Material = 1
+  Initial Condition = 1
+End
+
+! The upper surface
+Body 2
+  Name= "top free surface"
+  Equation = 2
+  Material = 1
+  Body Force = 2
+  Initial Condition = 1
+End
+
+! the lower surface
+Body 3
+  Name= "free surface sea/ice-shelf"
+  Equation = 3
+  Material = 1
+  Body Force = 3
+  Initial Condition = 1
+End
+
+!---------------------------------------------------
+!---------------- INITIAL CONDITIONS ---------------
+!---------------------------------------------------
+
+!! for ice 
+Initial Condition 1
+  Pressure = Real 0.0
+  Velocity 1 = Real 0.0
+  Velocity 2 = Real 0.0
+
+  Zs = Variable Coordinate 1
+  REAL cubic
+    include "../../Data/zsDEM.dat"
+  End
+  Zb = Variable Coordinate 1
+  REAL cubic
+    include "../../Data/zbDEM.dat"
+  End
+End
+
+!---------------------------------------------------
+!---------------- BODY FORCES ----------------------
+!---------------------------------------------------
+
+Body Force 1
+  Flow BodyForce 1 = Real 0.0
+  Flow BodyForce 2 = Real $gravity
+End
+
+!! accumulation flux in m/year
+Body Force 2
+   Zs Accumulation Flux 1 = Real 0.0e0
+   Zs Accumulation Flux 2 = Real 0.3e0 !m/a
+End
+
+!! no melting/accretion under ice/shelf
+Body Force 3
+  Zb Accumulation = Real 0.0e0
+End
+
+!---------------------------------------------------
+!---------------- MATERIALS ------------------------
+!---------------------------------------------------
+
+!! ice material properties in MPa - m - a system 
+Material 1
+  Viscosity Model = String "power law"
+  Density = Real $rhoi 
+  Viscosity = Real $eta 
+  Viscosity Exponent = Real $1.0/n 
+  Critical Shear Rate = Real 1.0e-15
+
+  Sea level = Real 0.0
+End
+
+!---------------------------------------------------
+!---------------- SOLVERS --------------------------
+!---------------------------------------------------
+
+Solver 1
+  Exec Solver = Before All
+  Equation = "MapCoordinateInit"
+  Procedure = "StructuredMeshMapper" "StructuredMeshMapper"
+  Dot Product Tolerance = Real 0.01
+
+  Active Coordinate = Integer 2
+
+!  Top Surface Variable Name = String "Zs"
+!  Bottom Surface Variable Name = String "Zb"
+End
+
+!! Initialisation of the Grounded Mask
+Solver 2
+  Exec Solver = "never"
+  Equation = GroundedMaskIni
+  Procedure = "ElmerIceSolvers" "GroundedSolver"
+  Variable = GroundedMask
+  Variable DOFs = 1
+
+  Toler = Real 1.0
+  Bedrock Variable = String "Bedrock"
+End
+
+Solver 3
+  Exec Solver = "never"
+  Equation = "NormalVector"
+  Procedure = "ElmerIceSolvers" "ComputeNormalSolver"
+  Variable = String "Normal Vector"
+  Variable DOFs = 2
+
+  ComputeAll = Logical False
+  Optimize Bandwidth = Logical False
+End
+
+Solver 4
+  Exec Solver = "never"
+  Equation = Fw
+  Procedure = "ElmerIceSolvers" "GetHydrostaticLoads"
+  Variable = Fw[Fwater:2]
+  Variable DOFs = 2
+End
+
+Solver 5
+  Equation = "Navier-Stokes"
+  calculate loads = Logical True
+  Linear System Solver = Direct     
+  Linear System Direct Method = MUMPS
+
+  Nonlinear System Max Iterations = 100
+  Nonlinear System Convergence Tolerance  = 1.0e-6
+  Nonlinear System Newton After Iterations = 10  
+  Nonlinear System Newton After Tolerance = 1.0e-04
+  Nonlinear System Relaxation Factor = 1.00
+  Nonlinear System Reset Newton = Logical True
+    
+  Steady State Convergence Tolerance = Real 1.0e-5
+
+  Stabilization Method = String Bubbles
+  !Stabilization Method = String Stabilized
+
+  Exported Variable 1 = Flow Solution Loads[Stress Vector:2 CEQ Residual:1] 
+  Calculate Loads = Logical True
+
+  Exported Variable 2 = -dofs 1 "dSdt"
+  Exported Variable 3 = -dofs 1 "dS"
+  Exported Variable 4 = -dofs 1 "Bedrock"
+  Exported Variable 5 = -dofs 1 "Depth"
+  Exported Variable 6 = -dofs 1 "Flow Solution Weights"
+
+  Flow Model = String "Stokes"
+End
+
+Solver 6
+  Equation = "HeightDepth"
+  Procedure = "StructuredProjectToPlane" "StructuredProjectToPlane"
+  Active Coordinate = Integer 2
+  Dot Product Tolerance = Real 1.0e-3
+
+  Operator 1 = Depth
+  Operator 2 = Height
+! Export Zb on the Upper surface
+  Variable 3 = Zb
+  Operator 3 = Bottom
+End
+
+
+Solver 7
+  Equation = "Free Surface Top"
+  Procedure =  "FreeSurfaceSolver" "FreeSurfaceSolver"
+  Variable = "Zs"
+  Variable DOFs =  1
+  Exported Variable 1 = "Zs Residual"
+  Exported Variable 1 DOFs = 1
+
+  Before Linsolve = "EliminateDirichlet" "EliminateDirichlet"
+
+  Linear System Solver = Iterative
+  Linear System Direct Method = UMFPACK
+  Linear System Max Iterations = 1500
+  Linear System Iterative Method = BiCGStab
+  Linear System Preconditioning = ILU0
+  Linear System Convergence Tolerance = Real 1.0e-10
+  Linear System Abort Not Converged = False
+  Linear System Residual Output = 1
+
+  Nonlinear System Max Iterations = 100
+  Nonlinear System Convergence Tolerance  = 1.0e-8
+  Nonlinear System Relaxation Factor = 1.00
+
+  Steady State Convergence Tolerance = 1.0e-03
+
+  Stabilization Method = Stabilized
+  Apply Dirichlet = Logical True
+
+  Relaxation Factor = Real 1.0
+End 
+
+Solver 8
+  Exec Solver = "never"
+  Equation = "Free Surface Sea/Shelf"
+  Procedure =  "FreeSurfaceSolver" "FreeSurfaceSolver"
+  Variable = "Zb"
+  Variable DOFS =  1
+  Exported Variable 1 = "Zb Residual"
+  Exported Variable 1 DOFs = 1
+
+  Before Linsolve = "EliminateDirichlet" "EliminateDirichlet"
+
+  Linear System Solver = Iterative
+  Linear System Direct Method = UMFPACK
+  Linear System Max Iterations = 1500
+  Linear System Iterative Method = BiCGStab
+  Linear System Preconditioning = ILU0
+  Linear System Convergence Tolerance = Real 1.0e-6
+  Linear System Abort Not Converged = False
+  Linear System Residual Output = 1
+
+  Nonlinear System Max Iterations = 100
+  Nonlinear System Convergence Tolerance  = 1.0e-5
+  Nonlinear System Relaxation Factor = 1.00
+
+  Steady State Convergence Tolerance = 1.0e-03
+
+  Stabilization Method = Stabilized
+  Apply Dirichlet = Logical True
+
+  Relaxation Factor = Real 1.0
+End
+
+Solver 9
+  Exec Solver = "After TimeStep"
+  Equation = "MapCoordinate"
+  Procedure = "StructuredMeshMapper" "StructuredMeshMapper"
+
+  Active Coordinate = Integer 2
+!  Mesh Velocity Variable = String "dSdt"
+!  Mesh Update Variable = String "dS"
+!  Mesh Velocity First Zero = Logical True
+
+  Top Surface Variable Name = String "Zs"
+!  Bottom Surface Variable Name = String "Zb"
+
+!  Displacement Mode = Logical False
+!  Correct Surface = Logical True
+  Minimum Mesh Height = Real 1.0
+  Dot Product Tolerance = Real 0.001
+End
+
+!! Compute the Mask 
+Solver 10
+  Exec Solver = "never"
+  Equation = GroundedMask
+  Procedure = "ElmerIceSolvers" "GroundedSolver"
+  Variable = GroundedMask
+  Variable DOFs = 1
+
+  Toler = Real 1.0e-3
+  Bedrock Variable = String "Bedrock"
+End
+
+Solver 11
+  Exec Solver =  "After TimeStep"
+  Procedure = File "SaveData" "SaveLine"
+  Filename =  "$namerun".dat"
+  File Append = Logical False
+End
+
+!---------------------------------------------------
+!---------------- EQUATIONS ------------------------
+!---------------------------------------------------
+
+Equation 1
+  Active Solvers (5) = 1 3 5 6 9
+End
+
+Equation 2
+  Active Solvers(1) = 7
+  Flow Solution Name = String "Flow Solution"
+  Convection = String Computed
+End 
+
+Equation 3
+  Active Solvers(4) = 2 4 8 10 
+  Flow Solution Name = String "Flow Solution"
+  Convection = String Computed
+End
+
+!---------------------------------------------------
+!---------------- BOUNDARY CONDITIONS --------------
+!---------------------------------------------------
+
+!! BC  Bedrock + Shelf
+Boundary Condition 1
+  Name = "bottom"
+  Target Boundaries = 1
+  Body Id = 3
+
+  Normal-Tangential Velocity = Logical True
+
+  Bottom Surface = Variable Coordinate 1
+  Real linear
+    include "../../Data/zbDEM.dat"
+  End
+ 
+!  Sliding Law = String "Weertman" 
+!  Weertman Friction Coefficient = Real $C
+!  Weertman Exponent = Real $(1.0/n)
+
+  Slip Coefficient 2 = Variable Coordinate 1
+  Real linear
+    include "../../Data/beta_x095_w010_d001.dat"
+  End
+
+  Velocity 1 = Real 0.0
+
+  Save Line = Logical True
+
+  ComputeNormal = Logical True
+End
+
+!! BC Lateral Ice-Shelf (air or sea contact)
+Boundary Condition 2
+  Name = "front"
+  Target Boundaries = 2
+
+  Velocity 1 = Variable Coordinate 2
+  REAL cubic
+    include "../../Data/UGL.dat"
+  End
+  Velocity 2 = Variable Coordinate 2
+  REAL cubic
+    include "../../Data/VGL.dat"
+  End
+End
+
+!! BC  Free surface Top
+Boundary Condition 3
+  Name = "top"
+  Target Boundaries = 3 
+  Body Id = 2
+
+  Top Surface = Equals "Zs"
+
+  Save Line = Logical True
+End
+
+!! Symmetry axis
+Boundary Condition 4
+  Name = "back"
+  Target Boundaries = 4
+  Velocity 1 = Real 0.0e0
+End
+

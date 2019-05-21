@@ -1,0 +1,664 @@
+
+
+check keywords warn
+
+! name of the run used for the outputs
+$name="h_response"
+
+! Parameter for regularization 
+$Lambda=0.0e00
+
+! this defines the F_u
+$ function obs(X) {\
+  xWinL=#XWINL#e3;\
+  xWinR=#XWINR#e3;\
+  L=1.05e6;\
+  nx=#NX#;\
+  _obs = 0.0 + 1.0*(X(0)>=xWinL)*(X(0)<xWinR)*nx/L;\
+}
+
+
+! 
+! working units are MPa, a, m
+! 
+$yearinsec = 365.25*24*60*60
+$rhoi = 900.0/(1.0e6*yearinsec^2)
+$rhow = 1000.0/(1.0e6*yearinsec^2)
+!$A = 4.6416e-25*yearinsec*1.0e18
+$A = 1.38e-24*yearinsec*1.0e18
+$n = 3.0
+$eta = 1.0/(2.0*A)^(1.0/n)
+$gravity = -9.8*yearinsec^2
+
+
+Header
+  Mesh DB "." "mesh2d"
+End
+
+!---------------------------------------------------
+!---------------- SIMULATION -----------------------
+!---------------------------------------------------
+Simulation
+  Coordinate System  = Cartesian 2D 
+
+  !Simulation Type = "Transient"
+  Simulation Type = Steady State
+
+  Timestepping Method = "bdf"
+  BDF Order = 1
+  Timestep Intervals = 1
+  Output Intervals = 1
+  Timestep Sizes = -1.0
+
+  Steady State Max Iterations = 100
+  Steady State Min Iterations = 1
+
+  Initialize Dirichlet Conditions = Logical False
+
+  max output level = 3
+
+  Post File = $name".vtu"
+End
+
+!---------------------------------------------------
+!---------------- BODIES ---------------------------
+!---------------------------------------------------
+! Main ice body
+Body 1
+  Equation = 1
+  Body Force = 1
+  Material = 1
+  Initial Condition = 1
+End
+
+! top surface
+Body 2
+  Equation = 2
+  Body Force = 2
+  Material = 1
+  Initial Condition = 1
+End
+
+! lower surface
+Body 3
+  Equation = 3
+  Body Force = 1
+  Material = 1
+  Initial Condition = 1
+End
+
+!---------------------------------------------------
+!---------------- INITIAL CONDITIONS ---------------
+!---------------------------------------------------
+Initial Condition 1
+  ! To get djdbeta
+  Beta = REAL 1.0
+
+! initial guess for (square root) slip coeff.
+  Pressure = Real 0.0 
+  Velocity 1 = Real 0.0 
+  Velocity 2 = Real 0.0
+
+  Adjoint 1 = Real 0.0
+  Adjoint 2 = Real 0.0
+  Adjoint 3 = Real 0.0
+
+! Surface velocities (data)
+  Vsurfini  = Variable Coordinate 1
+  Real cubic
+     include  "../../Data/UDEM.dat"
+  End
+
+  H = Variable Coordinate 1
+  REAL cubic
+    include "../../Data/zsDEM.dat"
+  End
+
+  psiH = Real 0.0
+
+  Fu = Variable Coordinate 1
+  REAL MATC "obs(tx)"
+
+  Zs = Variable Coordinate 1
+  REAL cubic
+    include "../../Data/zsDEM.dat"
+  End
+  RefZs = Variable Coordinate 1
+  REAL cubic
+    include "../../Data/zsDEM.dat"
+  End
+End
+
+!---------------------------------------------------
+!---------------- BODY FORCES ----------------------
+!---------------------------------------------------
+Body Force 1
+  Flow BodyForce 1 = Real 0.0                          
+  Flow BodyForce 2 = Real $gravity
+End
+
+Body Force 2
+  Zs Accumulation Flux 1 = Real 0.0e0
+  Zs Accumulation Flux 2 = Real 0.3e0 !m/a
+  ! Forcing term on the right hand side
+  psiH Accumulation Flux 1 = Real 0.0
+  psiH Accumulation Flux 2 = Variable Velocity 1 grad 2, Coordinate 1
+    Real MATC "obs(tx(1)) + tx(0) * obs(tx(1))*0.0"
+  ! The coefficient in the reaction term
+  psiH Reaction Coefficient = Variable H grad 1, velocity 1 grad 2
+    Real MATC "-tx(0)*tx(1)"
+End
+
+!---------------------------------------------------
+!---------------- MATERIALS ------------------------
+!---------------------------------------------------
+!! ice material properties in MPa - m - a system 
+Material 1
+  Viscosity Model = String "power law"
+  Density = Real $rhoi
+  Viscosity = Real $eta
+  Viscosity Exponent = Real $1.0/n
+  Critical Shear Rate = Real 1.0e-15
+
+  Sea level = Real 0.0
+
+!  Usurf DEM = File "./../Data/UDEM.xy"
+  Min Zs = Variable RefZs
+    Real MATC "tx - 0.1"
+  Max Zs = Variable RefZs
+    Real MATC "tx + 100.0"
+
+  Cauchy = Logical True
+End
+
+!---------------------------------------------------
+!---------------- SOLVERS --------------------------
+!---------------------------------------------------
+!!!! Structured mesh
+Solver 1
+  Exec Solver = "Before All"
+  Equation = "MapCoordinateInit"
+  Procedure = "StructuredMeshMapper" "StructuredMeshMapper"
+  Dot Product Tolerance = Real 0.01
+
+  Active Coordinate = Integer 2
+End
+
+Solver 2
+  Equation = "HeightDepth"
+  Exec Solver = "Before Timestep"
+  Procedure = "StructuredProjectToPlane" "StructuredProjectToPlane"
+  Active Coordinate = Integer 2
+  Dot Product Tolerance = Real 1.0e-3
+  Operator 1 = Depth
+  Operator 2 = Height
+End
+
+
+!!!! Navier-Stokes Solution
+Solver 3
+  Equation = "Navier-Stokes"
+  
+  flow model = Stokes
+  Stabilization Method = Bubbles
+
+!mandatory to save bulk stiffness matrix
+  calculate loads = Logical True
+  Linear System Solver = Direct
+  Linear System Direct Method = MUMPS
+  Mumps percentage increase working space = Integer 60
+
+! system self adjoint if Newton is used for the last iterations
+  Nonlinear System Max Iterations = Integer 100
+  Nonlinear System Convergence Tolerance  = Real 1.0e-7
+  Nonlinear System Newton After Iterations = Integer 10
+  Nonlinear System Newton After Tolerance = Real 1.0e-04
+  Nonlinear System Relaxation Factor = Real 1.0 
+
+  Nonlinear System Reset Newton = Logical True
+
+  Steady State Convergence Tolerance = Real 1.0e-8
+
+  Exported Variable 1 = VsurfIni
+  Exported Variable 1 DOFS = Integer 1
+
+! square root of the slip coef
+  Exported Variable 2 = Beta
+  Exported Variable 2 DOFS = Integer 1
+! derivative of the cost fn wr to beta
+  Exported Variable 3 = DJDBeta
+  Exported Variable 3 DOFS = Integer 1
+! value of the cost function
+  Exported Variable 4 = CostValue
+  Exported Variable 4 DOFS = Integer 1
+! Variable used to force the adjoint system/update in CostSolver
+  Exported Variable 5 = Velocityb
+  Exported Variable 5 DOFs = Integer 3
+  Exported Variable 6 = H
+  Exported Variable 6 DOFs = Integer 1
+End
+
+!!!! Compute dux/dx
+Solver 4
+  Equation = ComputeUx
+  Procedure = "FluxSolver" "FluxSolver"
+  Calculate Grad = Logical True
+  Target Variable = String "Velocity 1"
+  Linear System Solver = "Direct"
+  Linear System Direct Method = MUMPS
+  Variable = -nooutput fluxU
+End
+
+!!!! Compute surface gradient
+Solver 5
+ ! Exec Solver = "Before All"
+  Equation = ComputeHx
+  Procedure = "FluxSolver" "FluxSolver"
+  Calculate Grad = Logical True
+  Target Variable = String "H"
+  Linear System Solver = "Direct"
+  Linear System Direct Method = MUMPS
+  Variable = -nooutput flux0
+End
+
+!!!! Compute duy/dx
+Solver 6
+  !Exec Solver = Never
+  Equation = ComputeWx
+  Procedure = "FluxSolver" "FluxSolver"
+  Calculate Grad = Logical True
+  Target Variable = String "Velocity 2"
+  Linear System Solver = "Direct"
+  Linear System Direct Method = MUMPS
+  Variable = -nooutput fluxW
+End
+
+Solver 7
+  Exec Solver = "never"
+  Equation = "Free Surface Top"
+  Procedure =  "FreeSurfaceSolver" "FreeSurfaceSolver"
+  Variable = "Zs"
+  Variable DOFs =  1
+  ! needed for evaluating the contact pressure
+  Exported Variable 1 = -dofs 1 "Zs Residual"
+  ! needed for storing the initial shape (needed for updates)
+  Exported Variable 2 = -dofs 1 "RefZs"
+
+  !Before Linsolve = "EliminateDirichlet" "EliminateDirichlet"
+
+  Linear System Solver = Iterative
+  Linear System Max Iterations = 1000
+  Linear System Iterative Method = BiCGStab
+  Linear System Preconditioning = ILU1
+  Linear System Convergence Tolerance = Real 1.0e-8
+  Linear System Abort Not Converged = False
+  Linear System Residual Output = 1
+
+  Nonlinear System Max Iterations = 100
+  Nonlinear System Convergence Tolerance  = 1.0e-6
+  Nonlinear System Relaxation Factor = 1.00
+
+  Steady State Convergence Tolerance = 1.0e-04
+
+  Stabilization Method = Stabilized
+
+  Flow Solution Name = String "Flow Solution"
+  Apply Dirichlet = Logical True
+  Use Accumulation = Logical True
+
+  Relaxation Factor = Real 1.0
+End
+
+Solver 8
+!  Exec Solver = "never"
+  Exec Solver = "After TimeStep"
+  Equation = "MapCoordinate"
+  Procedure = "StructuredMeshMapper" "StructuredMeshMapper"
+
+  Active Coordinate = Integer 2 ! the mesh-update is y-direction
+  Top Surface Variable Name = String "Zs"
+
+  Minimum Mesh Height = Real 1.0
+
+
+! For time being this is currently externally allocated
+!  Mesh Velocity Variable = String "Mesh Velocity 2"
+
+! The 1st value is special as the mesh velocity could be unrelistically high
+!  Mesh Velocity First Zero = Logical True
+
+  Dot Product Tolerance = Real 0.01
+End
+
+
+!!!! Solve steady state surface adjoint equation
+Solver 9
+  Equation = "H-Adjoint"
+  !Exec Solver = never
+  Procedure = "../Executables/AdvReaction" "AdvReactionSolver"
+  Variable = "psiH"
+
+  Linear System Solver = Iterative
+  Linear System Max Iterations = 1000
+  Linear System Iterative Method = BiCGStab
+  Linear System Preconditioning = ILU1
+  Linear System Convergence Tolerance = Real 1.0e-8
+  Linear System Abort Not Converged = False
+  Linear System Residual Output = 1
+
+  Nonlinear System Min Iterations = 1
+  Nonlinear System Max Iterations = 100
+  Nonlinear System Convergence Tolerance = 1.0e-6
+
+  Nonlinear System Relaxation Factor = 1.00
+
+  Steady State Convergence Tolerance = 1.0e-06
+
+  Stabilization Method = Bubbles
+
+  Use Accumulation = Logical True
+
+  Flow Solution Name = String "Flow Solution"
+
+  Relaxation Factor = Real 1.0
+  Exported Variable 1 = Fu
+  Exported Variable 1 DOFs = Integer 1
+End
+
+
+!!! Compute Cost function
+!!!!!!!!   Has to be run before the Adjoint Solver as adjoint forcing is computed here !!!!!
+Solver 10
+  Equation = "Cost"
+
+!!  Solver need to be associated => Define dumy variable
+  Variable = -nooutput "CostV"
+  Variable DOFs = 1
+
+  procedure = "ElmerIceSolvers" "CostSolver_Adjoint"
+
+  Cost Variable Name = String "CostValue"  ! Name of Cost Variable
+
+  Optimized Variable Name = String "Beta"  ! Name of Beta for Regularization
+  Lambda = Real  $Lambda                   ! Regularization Coef
+! save the cost as a function of iterations
+  Cost Filename = File "Cost_$name".dat"   
+end
+
+!!!!  Adjoint Solution
+Solver 11
+  Equation = "Adjoint"
+ ! Exec Solver = "After timestep"
+  Variable = Adjoint
+  Variable Dofs = 3
+
+  procedure = "ElmerIceSolvers" "AdjointSolver"
+
+!Name of the flow solution solver
+  Flow Solution Equation Name = string "Navier-Stokes"
+
+  Linear System Solver = Direct
+  Linear System Direct Method = MUMPS
+  Mumps percentage increase working space = Integer 60
+End
+
+!!!!!  Compute Derivative of Cost function / Beta
+Solver 12
+  Equation = "DJDBeta"
+
+!!  Solver need to be associated => Define dumy variable
+  Variable = -nooutput "DJDB"
+  Variable DOFs = 1
+
+  procedure = "ElmerIceSolvers" "DJDBeta_Adjoint"
+  
+  Flow Solution Name = String "Flow Solution"
+  Adjoint Solution Name = String "Adjoint"
+  Optimized Variable Name = String "Beta"  ! Name of Beta variable
+  Gradient Variable Name = String "DJDBeta"   ! Name of gradient variable
+  PowerFormulation = Logical False
+  Beta2Formulation = Logical False        ! SlipCoef define as Beta^2
+
+  Lambda = Real  $Lambda                   ! Regularization Coef
+end
+
+!!!!! Optimization procedure 
+Solver 13
+  Exec Solver = "never"
+  Equation = "Optimize_m1qn3"
+
+!!  Solver need to be associated => Define dumy variable
+  Variable = -nooutput "UB"
+  Variable DOFs = 1
+
+  procedure = "ElmerIceSolvers" "Optimize_m1qn3Parallel"
+
+  Cost Variable Name = String "CostValue"
+  Optimized Variable Name = String "Beta"
+  Gradient Variable Name = String "DJDBeta"
+  gradient Norm File = String "GradientNormAdjoint_$name".dat"
+
+! M1QN3 Parameters
+  M1QN3 dxmin = Real 1.0e-10
+  M1QN3 epsg = Real  1.e-5
+  M1QN3 niter = Integer 400
+  M1QN3 nsim = Integer 400
+  M1QN3 impres = Integer 5
+  M1QN3 DIS Mode = Logical False
+  M1QN3 df1 = Real 0.5
+  M1QN3 normtype = String "dfn"
+  M1QN3 OutputFile = File  "M1QN3_$name".out"
+  M1QN3 ndz = Integer 20
+end
+
+!!!! Compute normal vectors on the boundary
+Solver 14
+  Exec Solver = "Before All"
+  Equation = "NormalVector"
+  Procedure = "ElmerIceSolvers" "ComputeNormalSolver"
+  Variable = String "Normal Vector"
+  Variable DOFs = 2
+
+  ComputeAll = Logical False
+  Optimize Bandwidth = Logical False
+End
+
+Solver 15
+  Equation = "Forward Strain Rate"
+  Procedure = "ElmerIceSolvers" "ComputeStrainRate"
+! this is just a dummy, hence no output is needed
+!-----------------------------------------------------------------------  
+  Variable = -nooutput "Euij"
+  Variable DOFs = 1
+
+  Exported Variable 1 = "UStrainRate"
+  Exported Variable 1 DOFs = 5 !in 2D, 7 in 3D
+
+! the name of the variable containing the flow solution (U,V,W,Pressure)
+!-----------------------------------------------------------------------
+  Flow Solver Name = String "Flow Solution"
+! the name of the strain-rate solution (default is 'StrainRate')
+  StrainRate Variable Name = String "UStrainRate"
+
+  Nonlinear System Convergence Tolerance = 1.0e-8
+  Linear System Solver = Direct
+  Linear System Direct Method = MUMPS
+End
+
+Solver 16
+  Equation = "Adjoint Strain Rate"
+  Procedure = "ElmerIceSolvers" "ComputeStrainRate"
+! this is just a dummy, hence no output is needed
+!-----------------------------------------------------------------------  
+  Variable = -nooutput "Evij"
+  Variable DOFs = 1
+
+  Exported Variable 1 = "VStrainRate"
+  Exported Variable 1 DOFs = 5 !in 2D, 7 in 3D
+
+! the name of the variable containing the flow solution (U,V,W,Pressure)
+!-----------------------------------------------------------------------
+  Flow Solver Name = String "Adjoint"
+! the name of the strain-rate solution (default is 'StrainRate')
+  StrainRate Variable Name = String "VStrainRate"
+
+  Nonlinear System Convergence Tolerance = 1.0e-8
+  Linear System Solver = Direct
+  Linear System Direct Method = MUMPS
+End
+
+Solver 17
+!exec solver = never
+  Equation = String "StressSolver"
+  Procedure =  File "ElmerIceSolvers" "ComputeDevStress"
+  ! this is just a dummy, hence no output is needed
+  !-----------------------------------------------------------------------
+  Variable = -nooutput "Sij"
+  Variable DOFs = 1
+  ! the name of the variable containing the flow solution (U,V,W,Pressure)
+  !-----------------------------------------------------------------------
+  Flow Solver Name = String "Flow Solution"
+  ! no default value anymore for "Stress Variable Name"
+  Stress Variable Name = String "Stress"
+  !-----------------------------------------------------------------------
+  Exported Variable 1 = "Stress"  ! [Sxx, Syy, Szz, Sxy] in 2D
+                                 ! [Sxx, Syy, Szz, Sxy, Syz, Szx] in 3D
+  Exported Variable 1 DOFs = 4   ! 4 in 2D, 6 in 3D
+  Linear System Solver = "Iterative"
+  Linear System Iterative Method = "BiCGStab"
+  Linear System Max Iterations = 300
+  Linear System Convergence Tolerance = 1.0E-09
+  Linear System Abort Not Converged = True
+  Linear System Preconditioning = "ILU0"
+  Nonlinear System Convergence Tolerance = 1.0e-8
+End
+
+!!!! Save data along surface and bottom boundary
+Solver 18
+  Exec Solver =  "After TimeStep"
+  Procedure = File "SaveData" "SaveLine"
+  Filename =  $name".dat"
+  File Append = Logical False
+End
+
+!---------------------------------------------------
+!---------------- EQUATIONS ------------------------
+!---------------------------------------------------
+Equation 1
+  Active Solvers (14)= 1 2 3 4 5 6 8 10 11 13 14 15 16 17
+  NS Convect= False
+  Flow Solution Name = String "Flow Solution"
+  Convection = String "Computed"
+End
+
+Equation 2
+  Active Solvers (2)= 7 9
+  Flow Solution Name = String "Flow Solution"
+  Convection = String "Computed"
+End
+
+Equation 3
+ Active Solvers (1)= 12
+End
+
+!---------------------------------------------------
+!---------------- BOUNDARY CONDITIONS --------------
+!---------------------------------------------------
+! bottom
+Boundary Condition 1 
+  !Name= "bed" mandatory to compute regularistaion term of the cost function (int (dbeta/dx) 2)
+  Name = "bed"
+  !Body Id used to solve
+  Target Boundaries = 1
+  Body ID = Integer 3
+
+  Bottom Surface = Variable Coordinate 1
+  REAL cubic
+    include "../../Data/zbDEM.dat"
+  END
+
+  Normal-Tangential Velocity = Logical True  
+  Normal-Tangential Adjoint = Logical True  
+
+  Adjoint Force BC = Logical True
+
+  Velocity 1 = Real 0.0e0
+  Adjoint 1 = Real 0.0e0
+
+  Slip Coefficient 2 = Variable Coordinate 1
+  Real cubic
+    include "../../Data/beta.dat"
+  End
+
+  Save Line = Logical True
+
+  ComputeNormal = Logical True
+End
+
+! Right boundary
+Boundary Condition 2
+  Name = "right"
+  Target Boundaries = 2
+
+  Velocity 1 = Variable Coordinate 2
+  REAL cubic
+    include "../../Data/UGL.dat"
+  End
+
+  Velocity 2 = Variable Coordinate 2
+  REAL cubic
+    include "../../Data/VGL.dat"
+  End
+
+  Adjoint 1 = Real 0.0
+  Adjoint 2 = Real 0.0
+  ! Adjoint H only need right boundary
+  psiH = Real 0.0
+  !Zs = Variable Coordinate 1
+  !REAL cubic
+  !  include "../Data/zsDEM.dat"
+  !End
+End
+
+! Upper Surface
+Boundary Condition 3
+  !Name= "Surface" mandatory to compute cost function
+  Name = "Surface"
+
+  Target Boundaries = 3
+  Body ID = Integer 2 
+
+  ! Used by StructuredMeshMapper for initial surface topography
+  ! here interpolated from a regular DEM
+  Top Surface = Equals "Zs"
+!  Zs = Equals RefZs
+
+!  Zs Condition = Variable depth, height
+!       Real MATC "((tx(0) + tx(1)) < 10.0)-0.5"
+
+  ! Definition of the Cost function
+  Adjoint Cost = Variable Zs, Coordinate 1 
+    Real MATC "tx(0) * obs(tx(1))"
+  !  derivative of the cost function wr u and v
+  Adjoint Cost der 1 = Variable psiH, H grad 1, Coordinate 1
+    Real MATC "tx(0)*tx(1)"
+  Adjoint Cost der 2 = Variable psiH
+    Real MATC "-tx(0)"
+  Save Line = Logical True
+
+  ComputeNormal = Logical True
+End 
+
+! left boundary
+Boundary Condition 4
+  Name = "left"
+  Target Boundaries = 4 
+  Velocity 1 = Real 0.0
+  Adjoint 1 = Real 0.0
+  !Adjoint 2 = Real 0.0
+  !psiH = Real 0.0
+  !Zs = Variable Coordinate 1
+  !REAL cubic
+  !  include "../Data/zsDEM.dat"
+  !End
+End
